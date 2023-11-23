@@ -51,11 +51,15 @@ UART_HandleTypeDef huart2;
 UART_HandleTypeDef huart6;
 
 /* USER CODE BEGIN PV */
+//adc변환 후 데이터저장하는 변수
 uint16_t adc_value[3];
 uint8_t adc_value2[3];
+//데이터 송신시 사용하는 플래그 변수
 uint8_t cipsendFlag = 0;
-uint8_t lampFlag[] = "";
-uint8_t previouslampFlag=0;
+uint8_t lampFlag = 0;
+uint8_t previouslampFlag = 0;
+
+//데이터 수신시 데이터를 저장하는 변수
 uint8_t fromPC;
 uint8_t fromESP;
 uint8_t fromBLT;
@@ -118,7 +122,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 		HAL_UART_Receive_IT(&huart2, &fromPC, 1);
 	}
 	if (huart->Instance == USART6) {
-		//esp8266의 데이터1바이트씩 큐에 입력
+		//hc-05에서 받은 데이터1바이트씩 큐에 입력
 		put(&bltQueue, fromBLT);
 		HAL_UART_Receive_IT(&huart6, &fromBLT, 1);
 	}
@@ -166,43 +170,48 @@ int main(void) {
 	MX_USART6_UART_Init();
 	/* USER CODE BEGIN 2 */
 	HAL_TIM_Base_Start_IT(&htim2);
-
+	//큐 초기화
 	resetQUEUE(&pcQueue);
 	resetQUEUE(&espQueue);
 	resetQUEUE(&bltQueue);
 	HAL_UART_Receive_IT(&huart2, &fromPC, sizeof(fromPC));
 	HAL_UART_Receive_IT(&huart1, &fromESP, sizeof(fromESP));
 	HAL_UART_Receive_IT(&huart6, &fromBLT, sizeof(fromBLT));
-	uint32_t arr;
+	uint32_t arr = 0xA10001A0;
 	esp_init();
+	HAL_UART_Transmit(&huart6, &arr, 4, 10);
 	/* USER CODE END 2 */
 
 	/* Infinite loop */
 	/* USER CODE BEGIN WHILE */
 	while (1) {
 		HAL_Delay(200);
-		while (!(is_empty(&espQueue))) {
-			fromESP = get(&espQueue);
-			put(&cmprQueue, fromESP);
-			HAL_UART_Transmit(&huart2, &fromESP, 1, 10);
-		}
-		while (!(is_empty(&cmprQueue))) {
-			char *strtemp = strtok(cmprQueue.Buffer, ":");
-			strtemp = strtok(NULL, ":");
-			//if (strcmp(strtemp, ledString) == 0) {
-			//	HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
-			//}
-			strtemp = "";
-			resetQUEUE(&cmprQueue);
-		}
+		//큐의 버퍼에잇는 데이터를 출력합니다.
 		while (!(is_empty(&bltQueue))) {
 			fromBLT = get(&bltQueue);
 			HAL_UART_Transmit(&huart2, &fromBLT, 1, 10);
 		}
+		while (!(is_empty(&espQueue))) {
+			fromESP = get(&espQueue);
+			//put(&cmprQueue, fromESP);
+			HAL_UART_Transmit(&huart2, &fromESP, 1, 10);
+		}
+		/* esp8266모듈에서 전송한 데이터를 판독하여 특정 문자열과 비교한 결과에 따라
+		 * 보드의 LED상태를 교대로 변경하는 테스트용 코드입니다.
+		 while (!(is_empty(&cmprQueue))) {
+		 char *strtemp = strtok(cmprQueue.Buffer, ":");
+		 strtemp = strtok(NULL, ":");
+		 if (strcmp(strtemp, espString) == 0) {
+		 HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+		 }
+		 strtemp = "";
+		 resetQUEUE(&cmprQueue);
+		 }*/
 		resetQUEUE(&bltQueue);
 		resetQUEUE(&espQueue);
+		//AT+CIPSEND명령어를 사용하여 ESP8266의 TCP서버에 센서데이터값을 전송합니다.
 		if (cipsendFlag == 1) {
-			HAL_UART_Transmit(&huart1, ATCIPSEND, sizeof(ATCIPSEND), 10);
+			HAL_UART_Transmit(&huart1, ATCIPSEND, strlen(ATCIPSEND), 10);
 			adc_value2[0] = (uint8_t) adc_value[0];
 			adc_value2[1] = (uint8_t) adc_value[1];
 			adc_value2[2] = (uint8_t) adc_value[2];
@@ -210,21 +219,28 @@ int main(void) {
 			HAL_UART_Transmit(&huart1, adc_value2, sizeof(adc_value2), 10);
 			cipsendFlag = 0;
 		}
+		//밝기가 20미만일시 LAMP점등 신호 릴레이에 전송
 		if (adc_value[0] < 20 && lampFlag == 0) {
+			//1번릴레이 ON신호  A2= 오류검출(주소+상태) 01=릴레이상태 01=릴레이주소 A0=시작명령
 			arr = 0xA20101A0;
 			HAL_UART_Transmit(&huart6, &arr, 4, 10);
-			lampFlag = "lampon";
+			lampFlag = 1;
 			HAL_Delay(1000);
-
+			//밝기가 50초과일시 LAMP소등 신호 릴레이에 전송
 		} else if (adc_value[0] > 50 && lampFlag == 1) {
 			arr = 0xA10001A0;
 			HAL_UART_Transmit(&huart6, &arr, 4, 10);
-			lampFlag = "lampoff";
+			lampFlag = 0;
 			HAL_Delay(1000);
 		}
-		if (lampFlag!=previouslampFlag) {
-			HAL_UART_Transmit(&huart1, lampFlag, sizeof(lampFlag), 1);
-			previouslampFlag=lampFlag;
+		//램프상태를 TCP서버에 전송
+		if (lampFlag != previouslampFlag) {
+			char *msg = (lampFlag == 1) ? "lamp_on" : "lampoff";
+			uint8_t ATCIPSEND[] = "AT+CIPSEND=0,7\r\n";
+			HAL_UART_Transmit(&huart1, ATCIPSEND, strlen(ATCIPSEND), 10);
+			HAL_Delay(20);
+			HAL_UART_Transmit(&huart1, msg, strlen(msg), 1);
+			previouslampFlag = lampFlag;
 		}
 		/* USER CODE END WHILE */
 
