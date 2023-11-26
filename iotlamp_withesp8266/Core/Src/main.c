@@ -45,7 +45,9 @@
 /* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc1;
 DMA_HandleTypeDef hdma_adc1;
+
 TIM_HandleTypeDef htim2;
+
 UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
 UART_HandleTypeDef huart6;
@@ -58,7 +60,7 @@ uint8_t adc_value2[3];
 uint8_t cipsendFlag = 0;
 uint8_t lampFlag = 0;
 uint8_t previouslampFlag = 0;
-
+uint8_t tcpflag = 0;
 //데이터 수신시 데이터를 저장하는 변수
 uint8_t fromPC;
 uint8_t fromESP;
@@ -98,7 +100,7 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc) {
 		adc_value[1] = (-66.875 + 218.75 * (float) (adc_value[1] / 4095.0));// 온도
 		adc_value[2] = (-12.5 + 125 * (float) (adc_value[2] / 4095.0));	//습도
 		//printf("%ld %ld %ld \r\n",adc_value[0],adc_value[1],adc_value[2]);
-		//tcp서버송신 신호 플래그 활성화
+		//adc변환완료 플래그 활성화
 		cipsendFlag = 1;
 	}
 }
@@ -193,24 +195,23 @@ int main(void) {
 		}
 		while (!(is_empty(&espQueue))) {
 			fromESP = get(&espQueue);
-			//put(&cmprQueue, fromESP);
+			put(&cmprQueue, fromESP);
 			HAL_UART_Transmit(&huart2, &fromESP, 1, 10);
 		}
-		/* esp8266모듈에서 전송한 데이터를 판독하여 특정 문자열과 비교한 결과에 따라
-		 * 보드의 LED상태를 교대로 변경하는 테스트용 코드입니다.
-		 while (!(is_empty(&cmprQueue))) {
-		 char *strtemp = strtok(cmprQueue.Buffer, ":");
-		 strtemp = strtok(NULL, ":");
-		 if (strcmp(strtemp, espString) == 0) {
-		 HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
-		 }
-		 strtemp = "";
-		 resetQUEUE(&cmprQueue);
-		 }*/
+		//tcp서버 상태 확인
+		while (!(is_empty(&cmprQueue))) {
+			if (strcmp(cmprQueue.Buffer, "0,CONNECT\r\n") == 0) {
+				tcpflag = 1;
+			}
+			if (strcmp(cmprQueue.Buffer, "0,CLOSED\r\n") == 0) {
+				tcpflag = 0;
+			}
+			resetQUEUE(&cmprQueue);
+		}
 		resetQUEUE(&bltQueue);
 		resetQUEUE(&espQueue);
 		//AT+CIPSEND명령어를 사용하여 ESP8266의 TCP서버에 센서데이터값을 전송합니다.
-		if (cipsendFlag == 1) {
+		if (cipsendFlag == 1 && tcpflag == 1) {
 			HAL_UART_Transmit(&huart1, ATCIPSEND, strlen(ATCIPSEND), 10);
 			adc_value2[0] = (uint8_t) adc_value[0];
 			adc_value2[1] = (uint8_t) adc_value[1];
